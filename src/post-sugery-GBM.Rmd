@@ -1,0 +1,361 @@
+---
+title: "Glioblastoma surgery GL261"
+author: "achemkhi"
+date: "2024-12-06"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(include = FALSE)
+library(Seurat)
+library(dplyr)
+library(grid)
+library(gridExtra)
+library(here)
+library(fs)
+library(millefy)
+setwd("~/Desktop/myProjects/2D_gast")
+fs::link_create(path = "/Users/alichemkhi/Desktop/data", new_path = "data")# create symbolic link to data="/Users/alichemkhi/Desktop/data"
+fs::link_create(path = "/Users/alichemkhi/Desktop/myProjects/renv", new_path = "renv")# create symbolic link to data="/Users/alichemkhi/Desktop/data"
+
+VERSION_0 ="V0"; 
+ENABLE_MI_SELECTION=TRUE;
+
+```
+
+## Load data
+
+-   seurat object - Glioblastoma surgery GL261
+
+```{r}
+
+# Load the datasets
+dataset.gbm <- readRDS(file ="../data/20241210_GL261_ForMiic.rds") 
+dataset.gbm
+
+knitr::kable(dataset.gbm@meta.data[1:5,], format = "html")
+
+```
+
+## Visualize features
+
+```{r}
+
+VlnPlot(object = dataset.gbm,pt.size=0, features=c("nCount_RNA","nFeature_RNA","percent.mito"),group.by ="cond" ,slot = "counts")
+VlnPlot(object = dataset.gbm,pt.size=0, features=c("nCount_RNA","nFeature_RNA","percent.mito"),group.by ="cell_types" ,slot = "counts")
+VlnPlot(object = dataset.gbm,pt.size=0, features=c("nCount_RNA","nFeature_RNA","percent.mito"),group.by ="Phase" ,slot = "counts")
+
+FeatureScatter(object = dataset.gbm, feature1 = "nCount_RNA", feature2 = "nFeature_RNA",slot = "counts")
+
+DimPlot(dataset.gbm,label = TRUE, reduction = "umap",dims=c(1,2))
+DimPlot(dataset.gbm, reduction = "umap",dims=c(1,2), group.by = "cond")
+DimPlot(dataset.gbm, reduction = "umap",dims=c(1,2), group.by = "orig.ident")
+
+
+```
+
+## value counts
+
+```{r}
+dataset.gbm
+table(dataset.gbm@meta.data$cond.day)
+table(dataset.gbm@meta.data$cond, dataset.gbm@meta.data$cell_types)
+
+
+dim(GetAssayData(dataset.gbm))
+dim(dataset.gbm@assays$RNA)
+dim(dataset.gbm@assays$SCT)
+
+# [1] 23912 19835
+# [1] 24820 19835
+# [1] 23912 19835
+```
+
+## Regroup Ribo S and L .
+
+Ribosomal genes seem to share high information levels with hypoxia metadata. for readability purposes we chose to collapse these genes . See figure below .![Ribo genes](images/Tumor_MI_heatmap_filtered.withRibo.png){width="434"}
+
+```{r}
+
+ribosomal_s_genes <- rownames(dataset.gbm)[grepl("^Rps", rownames(dataset.gbm), ignore.case = TRUE)]
+ribosomal_s_matrix <- GetAssayData(dataset.gbm, slot = "data")[ribosomal_s_genes,]
+mean_rs_expression <- colMeans(ribosomal_s_matrix)
+
+ribosomal_l_genes <- rownames(dataset.gbm)[grepl("^Rpl", rownames(dataset.gbm), ignore.case = TRUE)]
+ribosomal_l_matrix <- GetAssayData(dataset.gbm, slot = "data")[ribosomal_l_genes, ]
+mean_rl_expression <- colMeans(ribosomal_l_matrix)
+
+
+dataset.gbm <- AddMetaData(
+  object = dataset.gbm,
+  metadata = mean_rl_expression, # Mean expression for each cell
+  col.name = "RiboLMean" # Name of the new feature
+)
+
+dataset.gbm <- AddMetaData(
+  object = dataset.gbm,
+  metadata = mean_rs_expression, # Mean expression for each cell
+  col.name = "RiboSMean" # Name of the new feature
+)
+
+
+# Step 5: Remove the original ribosomal genes
+remaining_genes <- setdiff(rownames(dataset.gbm@assays$RNA$counts), c(ribosomal_l_genes, ribosomal_s_genes))
+dataset.gbm <- subset(dataset.gbm, features = remaining_genes)
+
+dim(GetAssayData(dataset.gbm))
+dim(dataset.gbm@assays$RNA)
+dim(dataset.gbm@assays$SCT)
+# [1] 23812 19835
+# [1] 24720 19835
+# [1] 23812 19835
+
+```
+
+```{r}
+# debug 
+# dataset.gbm
+# ribosomal_s_matrix[1:3,1:3]
+# mean_rs_expression[1:3]
+# ribosomal_l_matrix[1:3,1:3]
+# mean_rl_expression[1:3]
+# colMeans(ribosomal_l_matrix)[1:3]
+# rowMeans(ribosomal_l_matrix)[1:3]
+# dataset.gbm@meta.data
+
+```
+
+## Generate causalCCC inputs
+
+-   Dump necessary files
+
+```{r include=FALSE}
+### Mandatory Libraries 
+library(tidyverse)
+library(data.table)
+library(dplyr)
+### For CCC selection - optional if you want to use your own L-R list
+##library(liana)
+### For network aesthetic display
+library(rjson)
+library(miic)
+
+```
+
+### Get ligands - receptors
+
+The list of ligands-receptor was generated with Liana+ - `/Users/alichemkhi/Desktop/data/LianaCCC.csv`\` .
+
+-   As senders : tumor cells
+
+-   As receivers : myeloid cells
+
+```{r include=FALSE}
+
+liana= read_csv(file="/Users/alichemkhi/Desktop/data/LianaCCC.csv")
+tumor_to_myeloid_df=liana[liana$source=="Tumor" & liana$target=="Myeloid_cell", ]
+
+#Extract ligands and receptors
+ligands <- unique(as.vector(tumor_to_myeloid_df$ligand_complex))
+receptors <- unique(as.vector(tumor_to_myeloid_df$receptor_complex))
+# some receptors are multiple, we need to unlist them
+receptors <- unique(unlist(str_split(receptors, "_")))
+
+#Create the list of CCC links. 
+# and unlist duplicate receptors 
+
+interact_edges <- data.frame(ligands = character(), receptors = character())
+
+for (i in 1:nrow(tumor_to_myeloid_df)) {
+  oneligand <- tumor_to_myeloid_df$ligand_complex[i]
+  onereceptor <- tumor_to_myeloid_df$receptor_complex[i]
+  onereceptor <- unique(unlist(str_split(onereceptor, "_")))
+  for (onerecp in onereceptor) {
+    interact_edges[nrow(interact_edges) +1,] <- c(oneligand, onerecp)
+  }
+}
+interact_edges <- interact_edges[!(duplicated(interact_edges)),]
+
+
+write.table(interact_edges, file.path("../output/tumor_myeloid.tsv"), row.names=F, quote=F, sep="\t")
+
+```
+
+### Select relevant genes :
+
+MI based selection .
+
+```{r}
+assay_name <- 'RNA'
+senders <-  c('Tumor') 
+receivers <-  c('Myeloid')
+
+metadata_senders <- list(hypoxia_score=NULL,RiboLMean=NULL,RiboSMean=NULL,cond.day=c("CTL","RES_D1","RES_D7") )
+metadata_receivers <- list(hypoxia_score=NULL,RiboLMean=NULL,RiboSMean=NULL,cond.day=c("CTL","RES_D1","RES_D7") )
+
+dataset.gbm <- subset(dataset.gbm, idents = c(senders, receivers))
+genes=rownames(dataset.gbm) # all genes in so
+genes_all=rownames(dataset.gbm@assays$RNA$data) # all genes in so
+
+
+# -------- uppercase consistence workaround -------------
+# can use biomart  to convert mouse name to human  
+# Gene names from Liana+ table are uppercase  meanwhile gene names in the seurat object are lower case . Looks like overwriting the object rawnames isn't permited . 
+
+# Convert to lowercase and capitalize the first letter
+ligands_cap <- unname(sapply(ligands, function(x) {
+  paste0(toupper(substring(x, 1, 1)), tolower(substring(x, 2)))
+}))
+stopifnot(ligands_cap %in% genes)
+
+receptors_cap <- unname(sapply(receptors, function(x) {
+  paste0(toupper(substring(x, 1, 1)), tolower(substring(x, 2)))
+}))
+stopifnot(receptors_cap %in% genes)
+
+
+# Convert to lowercase and capitalize the first letter for interact_edges
+interact_edges$ligands <- sapply(interact_edges$ligands, function(x) {
+  paste0(toupper(substring(x, 1, 1)), tolower(substring(x, 2)))
+})
+stopifnot(interact_edges$ligands %in% genes)
+
+interact_edges$receptors <- sapply(interact_edges$receptors, function(x) {
+  paste0(toupper(substring(x, 1, 1)), tolower(substring(x, 2)))
+})
+stopifnot(interact_edges$receptors %in% genes)
+
+
+```
+
+### Find genes that share the most information with your biological question :
+
+```{r}
+
+if (ENABLE_MI_SELECTION) {
+  # time consuming
+  MI_senders_genes <- causalCCC.MIselection(data_input = dataset.gbm,
+                                 assay_name = "RNA",
+                                 interact_ident = "cell_types",
+                                 oneinteract = senders,
+                                 goi = c(ligands_cap),#,goi_senders),
+                                 metadata_list = names(metadata_senders),
+                                 save = T,
+                                 output_dir = file.path("../output/MI_tables_noRibo"),
+                                 color_heatmap = "darkgreen",
+                                 plot = T)
+  save(MI_senders_genes, file = "../output/MI_tables_noRibo/MI_senders_genes.RData") 
+}else {
+  MI_senders_genes=load("../output/MI_tables_noRibo/MI_senders_genes.RData")
+}
+
+
+```
+
+```{r}
+
+if (ENABLE_MI_SELECTION) {
+MI_receivers_genes <- causalCCC.MIselection(data_input = dataset.gbm,
+                                 assay_name = "RNA",
+                                 interact_ident = "cell_types",
+                                 oneinteract = receivers,
+                                 goi = c(receptors_cap),
+                                 metadata_list = names(metadata_receivers),
+                                 save = T,
+                                 output_dir = file.path("../output/MI_tables_noRibo"),
+                                 color_heatmap = "darkorange",
+                                 plot = T)
+save(MI_receivers_genes, file = "../output/MI_tables_noRibo/MI_receivers_genes.RData") 
+}else {
+  MI_receivers_genes=load("../output/MI_tables_noRibo/MI_receivers_genes.RData")
+}
+
+
+```
+
+### list of selected genes
+
+```{r}
+length(MI_receivers_genes)
+length(MI_senders_genes)
+
+```
+
+### Prot filtered list
+
+```{r}
+# liana_prot= read_csv(file="/Users/alichemkhi/Desktop/data/LianaCCC_prot_filtered.csv")
+# tumor_to_myeloid__prot_df=liana_prot[liana_prot$source=="Tumor" & liana_prot$target=="Myeloid_cell", ]
+# 
+# 
+# liana_prot$lig
+# liana_prot$recep
+
+
+```
+
+### Save files for causalCCC
+
+-   mosaic csv file
+
+```{r}
+genes_senders <- unique(c(ligands_cap, MI_senders_genes))
+genes_receivers <- unique(c(receptors_cap, MI_receivers_genes))
+
+# remove metadata from gene names 
+genes_receivers=genes_receivers[!genes_receivers %in% c("hypoxia_score","RiboLMean","RiboSMean")]
+genes_senders=genes_senders[!genes_senders %in% c("hypoxia_score","RiboLMean","RiboSMean")]
+
+
+## Create the input mosaic matrix
+causalCCC_df <- causalCCC.mosaic(data_input = dataset.gbm,
+                                assay_name = assay_name,
+                                interact_ident = "cell_types",
+                                senders_name = senders,
+                                receivers_name = receivers,
+                                genes_senders= genes_senders,
+                                genes_receivers = genes_receivers,
+                                metadata_senders = names(metadata_senders),
+                                metadata_receivers = names(metadata_receivers))
+
+# Create the state order
+causalCCC_st <- causalCCC.state_order(mosaic_data_table = causalCCC_df,
+                                            genes_senders= genes_senders,
+                                            genes_receivers = genes_receivers,
+                                            ligands = ligands,
+                                            receptors = receptors,
+                                            metadata_senders = metadata_senders,
+                                            metadata_receivers = metadata_receivers)
+
+
+```
+
+```{r}
+## Create the network layout
+
+network_layout <- causalCCC.layout(causalCCC_st, network_height = 8)
+file <- file(file.path("../output/causalCCC_layout.json"))
+writeLines(network_layout, file)
+close(file)
+
+write.table(causalCCC_df, file = file.path("../output/causalCCC_df.csv"), quote = F, sep = ",", row.names = F)
+write.table(causalCCC_st, file = file.path("../output/causalCCC_st.csv"), quote = F, sep = "\t", row.names = F)
+
+#Fix ligands and receptors names when duplicated
+duplicated_ligands <- intersect(ligands,genes_receivers)
+duplicated_receptors <- intersect(receptors, genes_senders)
+
+interact_edges$ligands <- ifelse(interact_edges$ligands %in% duplicated_ligands, paste0(interact_edges$ligands, "_senders"), interact_edges$ligands)
+interact_edges$receptors <- ifelse(interact_edges$receptors %in% duplicated_receptors, paste0(interact_edges$receptors, "_receivers"), interact_edges$receptors)
+
+write.table(interact_edges, file.path("../output/causalCCC_interactEdges.tsv"), row.names=F, quote=F, sep="\t")
+
+```
+
+```{r}
+causalCCC_df
+```
