@@ -9,8 +9,13 @@ output:
   pdf_document: default
 ---
 
-```{r setup, include=FALSE}
-knitr::opts_chunk$set(include = FALSE)
+```{r, warning = FALSE }
+knitr::opts_chunk$set(
+  echo = TRUE,       # Display code
+  results = 'markup', # Display results
+  warning = FALSE,   # Suppress warnings (optional)
+  message = FALSE    # Suppress messages (optional)
+  )
 library(Seurat)
 library(dplyr)
 library(grid)
@@ -22,21 +27,21 @@ setwd("~/Desktop/myProjects/2D_gast")
 fs::link_create(path = "/Users/alichemkhi/Desktop/data", new_path = "data")# create symbolic link to data="/Users/alichemkhi/Desktop/data"
 fs::link_create(path = "/Users/alichemkhi/Desktop/myProjects/renv", new_path = "renv")# create symbolic link to data="/Users/alichemkhi/Desktop/data"
 
-VERSION_0 ="V0"; 
-ENABLE_MI_SELECTION=TRUE;
+VERSION_0 ="V0"
+ENABLE_MI_SELECTION=FALSE # MI_selection is time consuming 
 
 ```
 
 ## Load data
 
--   seurat object - Glioblastoma surgery GL261
+-   Seurat object - Glioblastoma surgery GL261
 
 ```{r}
 
 # Load the datasets
 dataset.gbm <- readRDS(file ="../data/20241210_GL261_ForMiic.rds") 
 dataset.gbm
-
+# metadata
 knitr::kable(dataset.gbm@meta.data[1:5,], format = "html")
 
 ```
@@ -58,13 +63,12 @@ DimPlot(dataset.gbm, reduction = "umap",dims=c(1,2), group.by = "orig.ident")
 
 ```
 
-## value counts
+## Value counts
 
 ```{r}
 dataset.gbm
-table(dataset.gbm@meta.data$cond.day)
 table(dataset.gbm@meta.data$cond, dataset.gbm@meta.data$cell_types)
-
+table(dataset.gbm@meta.data$cond.day, dataset.gbm@meta.data$cell_types)
 
 dim(GetAssayData(dataset.gbm))
 dim(dataset.gbm@assays$RNA)
@@ -75,9 +79,9 @@ dim(dataset.gbm@assays$SCT)
 # [1] 23912 19835
 ```
 
-## Regroup Ribo S and L .
+## Regroup ribosomal  S and L .
 
-Ribosomal genes seem to share high information levels with hypoxia metadata. for readability purposes we chose to collapse these genes . See figure below .![Ribo genes](images/Tumor_MI_heatmap_filtered.withRibo.png){width="434"}
+Ribosomal genes seem to share high information levels with hypoxia metadata. For readability purposes we chose to collapse those genes . See figure below .![Ribo genes](images/Tumor_MI_heatmap_filtered.withRibo.png){width="434"}
 
 ```{r}
 
@@ -92,7 +96,7 @@ mean_rl_expression <- colMeans(ribosomal_l_matrix)
 
 dataset.gbm <- AddMetaData(
   object = dataset.gbm,
-  metadata = mean_rl_expression, # Mean expression for each cell
+  metadata = mean_rl_expression, # Mean expression 
   col.name = "RiboLMean" # Name of the new feature
 )
 
@@ -116,22 +120,9 @@ dim(dataset.gbm@assays$SCT)
 
 ```
 
-```{r}
-# debug 
-# dataset.gbm
-# ribosomal_s_matrix[1:3,1:3]
-# mean_rs_expression[1:3]
-# ribosomal_l_matrix[1:3,1:3]
-# mean_rl_expression[1:3]
-# colMeans(ribosomal_l_matrix)[1:3]
-# rowMeans(ribosomal_l_matrix)[1:3]
-# dataset.gbm@meta.data
-
-```
-
 ## Generate causalCCC inputs
 
--   Dump necessary files
+Dump necessary files
 
 ```{r include=FALSE}
 ### Mandatory Libraries 
@@ -148,7 +139,7 @@ library(miic)
 
 ### Get ligands - receptors
 
-The list of ligands-receptor was generated with Liana+ - `/Users/alichemkhi/Desktop/data/LianaCCC.csv`\` .
+The list of ligands-receptor was generated with Liana+, `/Users/alichemkhi/Desktop/data/LianaCCC.csv`\` . (Adrien file)
 
 -   As senders : tumor cells
 
@@ -187,13 +178,14 @@ write.table(interact_edges, file.path("../output/tumor_myeloid.tsv"), row.names=
 
 ### Select relevant genes :
 
-MI based selection .
+mutual information (MI) based selection .
 
 ```{r}
 assay_name <- 'RNA'
 senders <-  c('Tumor') 
 receivers <-  c('Myeloid')
 
+# Add metadata as 
 metadata_senders <- list(hypoxia_score=NULL,RiboLMean=NULL,RiboSMean=NULL,cond.day=c("CTL","RES_D1","RES_D7") )
 metadata_receivers <- list(hypoxia_score=NULL,RiboLMean=NULL,RiboSMean=NULL,cond.day=c("CTL","RES_D1","RES_D7") )
 
@@ -207,6 +199,7 @@ genes_all=rownames(dataset.gbm@assays$RNA$data) # all genes in so
 # Gene names from Liana+ table are uppercase  meanwhile gene names in the seurat object are lower case . Looks like overwriting the object rawnames isn't permited . 
 
 # Convert to lowercase and capitalize the first letter
+# Convert Liana gene names to mouse format (SERPINE1 -> Serpine1) 
 ligands_cap <- unname(sapply(ligands, function(x) {
   paste0(toupper(substring(x, 1, 1)), tolower(substring(x, 2)))
 }))
@@ -248,9 +241,9 @@ if (ENABLE_MI_SELECTION) {
                                  output_dir = file.path("../output/MI_tables_noRibo"),
                                  color_heatmap = "darkgreen",
                                  plot = T)
-  save(MI_senders_genes, file = "../output/MI_tables_noRibo/MI_senders_genes.RData") 
+  save(MI_senders_genes, file = "../output/MI_tables_noRibo/MI_senders_genes.rds") 
 }else {
-  MI_senders_genes=load("../output/MI_tables_noRibo/MI_senders_genes.RData")
+  load("../output/MI_tables_noRibo/v0/MI_senders_genes.RData")
 }
 
 
@@ -269,15 +262,15 @@ MI_receivers_genes <- causalCCC.MIselection(data_input = dataset.gbm,
                                  output_dir = file.path("../output/MI_tables_noRibo"),
                                  color_heatmap = "darkorange",
                                  plot = T)
-save(MI_receivers_genes, file = "../output/MI_tables_noRibo/MI_receivers_genes.RData") 
+save(MI_receivers_genes, file = "../output/MI_tables_noRibo/MI_receivers_genes.rds") 
 }else {
-  MI_receivers_genes=load("../output/MI_tables_noRibo/MI_receivers_genes.RData")
+  load("../output/MI_tables_noRibo/v0/MI_receivers_genes.RData")
 }
 
 
 ```
 
-### list of selected genes
+### List of selected genes
 
 ```{r}
 length(MI_receivers_genes)
@@ -287,11 +280,11 @@ length(MI_senders_genes)
 
 ### Prot filtered list
 
+compare the MI selected genes with the prot filtered ones .
+
 ```{r}
 # liana_prot= read_csv(file="/Users/alichemkhi/Desktop/data/LianaCCC_prot_filtered.csv")
 # tumor_to_myeloid__prot_df=liana_prot[liana_prot$source=="Tumor" & liana_prot$target=="Myeloid_cell", ]
-# 
-# 
 # liana_prot$lig
 # liana_prot$recep
 
@@ -300,7 +293,7 @@ length(MI_senders_genes)
 
 ### Save files for causalCCC
 
--   mosaic csv file
+-   Mosaic csv file
 
 ```{r}
 genes_senders <- unique(c(ligands_cap, MI_senders_genes))
@@ -315,8 +308,8 @@ genes_senders=genes_senders[!genes_senders %in% c("hypoxia_score","RiboLMean","R
 causalCCC_df <- causalCCC.mosaic(data_input = dataset.gbm,
                                 assay_name = assay_name,
                                 interact_ident = "cell_types",
-                                senders_name = senders,
-                                receivers_name = receivers,
+                                senders_name = "Tumor",
+                                receivers_name = "Myeloid",
                                 genes_senders= genes_senders,
                                 genes_receivers = genes_receivers,
                                 metadata_senders = names(metadata_senders),
@@ -330,7 +323,9 @@ causalCCC_st <- causalCCC.state_order(mosaic_data_table = causalCCC_df,
                                             receptors = receptors,
                                             metadata_senders = metadata_senders,
                                             metadata_receivers = metadata_receivers)
-
+# set metadata type as continue 
+causalCCC_st[c(1:8),2] <- 1
+head(causalCCC_st)
 
 ```
 
@@ -356,6 +351,19 @@ write.table(interact_edges, file.path("../output/causalCCC_interactEdges.tsv"), 
 
 ```
 
+## Causal CCC results 
+
++-------------------------------------+---------------------+---------------------------------------------------------------------------+
+|                                     | date                | link                                                                      |
++=====================================+=====================+===========================================================================+
+| Ribosome genes are merged together  | \                   | <https://miic.curie.fr/job_results_causalCCC.php?id=yKEJ1VO5nfqzBX0AuYZc> |
+|                                     | 2024-12-20 08:26:02 |                                                                           |
++-------------------------------------+---------------------+---------------------------------------------------------------------------+
+|                                     |                     |                                                                           |
++-------------------------------------+---------------------+---------------------------------------------------------------------------+
+|                                     |                     |                                                                           |
++-------------------------------------+---------------------+---------------------------------------------------------------------------+
+
 ```{r}
-causalCCC_df
+
 ```
